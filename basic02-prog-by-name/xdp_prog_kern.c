@@ -28,6 +28,16 @@ int  xdp_drop_func(struct xdp_md *ctx)
 
 /* Assignment#2: Add new XDP program section that use XDP_ABORTED */
 
+SEC("xdp")
+int  xdp_aborted_func(struct xdp_md *ctx)
+{
+        /* This program will always return XDP_ABORTED, which is a special
+         * return code that indicates that the XDP program failed to run
+         * properly, and the packet should be dropped.
+         */
+        return XDP_ABORTED;
+}
+
 char _license[] SEC("license") = "GPL";
 
 /* Hint the avail XDP action return codes are:
