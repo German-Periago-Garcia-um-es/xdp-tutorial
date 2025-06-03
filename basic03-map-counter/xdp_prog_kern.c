@@ -8,8 +8,16 @@
  * - Here an array with XDP_ACTION_MAX (max_)entries are created.
  * - The idea is to keep stats per (enum) xdp_action
  */
-struct {
+/*struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__type(key, __u32);
+	__type(value, struct datarec);
+	__uint(max_entries, XDP_ACTION_MAX);
+} xdp_stats_map SEC(".maps");
+*/
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__type(key, __u32);
 	__type(value, struct datarec);
 	__uint(max_entries, XDP_ACTION_MAX);
@@ -42,13 +50,32 @@ int  xdp_stats1_func(struct xdp_md *ctx)
 	/* Multiple CPUs can access data record. Thus, the accounting needs to
 	 * use an atomic operation.
 	 */
-	lock_xadd(&rec->rx_packets, 1);
-        /* Assignment#1: Add byte counters
-         * - Hint look at struct xdp_md *ctx (copied below)
-         *
-         * Assignment#3: Avoid the atomic operation
-         * - Hint there is a map type named BPF_MAP_TYPE_PERCPU_ARRAY
-         */
+	
+	//lock_xadd(&rec->rx_packets, 1);
+	/* Assignment#1: Add byte counters
+		* - Hint look at struct xdp_md *ctx (copied below)
+		*/
+	void * data_end = (void *)(long)ctx->data_end;
+	void * data     = (void *)(long)ctx->data;
+	if (data >= data_end)
+		return XDP_ABORTED; /* No data to process */
+	if (data + sizeof(struct datarec) > data_end)
+		return XDP_ABORTED; /* Not enough data to process */
+
+	__u64 bytes = data_end - data; /* Calculate packet length */
+		
+	//lock_xadd(&rec->rx_bytes, bytes);
+
+	/* Assignment#3: Avoid the atomic operation
+		* - Hint there is a map type named BPF_MAP_TYPE_PERCPU_ARRAY
+		*/
+	
+	rec->rx_packets += 1; /* Increment packet counter */
+	rec->rx_bytes   += bytes; /* Increment byte counter */
+	/* Note: The above is not atomic, but since this is a
+		* BPF_MAP_TYPE_PERCPU_ARRAY, the BPF kernel-side verifier
+		* will allow this.
+		*/
 
 	return XDP_PASS;
 }
