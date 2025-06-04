@@ -76,7 +76,12 @@ static double calc_period(struct record *r, struct record *p)
 static void stats_print_header()
 {
 	/* Print stats "header" */
-	printf("%-12s\n", "XDP-action");
+	char *head_fmt = "%-12s %16s %16s %18s %16s %s\n";
+	printf("\n");
+	printf(head_fmt, "XDP-action", "packets", "packet rate", 
+		"Bytes", "Bit rate", "Time period");
+	printf(head_fmt, "------------", "----------------", 
+		"----------------", "------------------", "----------------", "---------------");
 }
 
 static void stats_print(struct stats_record *stats_rec,
@@ -190,25 +195,106 @@ static void stats_collect(int map_fd, __u32 map_type,
 		map_collect(map_fd, map_type, key, &stats_rec->stats[key]);
 	}
 }
-
+/*
 static void stats_poll(int map_fd, __u32 map_type, int interval)
 {
 	struct stats_record prev, record = { 0 };
 
-	/* Trick to pretty printf with thousands separators use %' */
+	// Trick to pretty printf with thousands separators use %'
 	setlocale(LC_NUMERIC, "en_US");
 
-	/* Get initial reading quickly */
+	// Get initial reading quickly 
 	stats_collect(map_fd, map_type, &record);
 	usleep(1000000/4);
 
 	while (1) {
-		prev = record; /* struct copy */
+		prev = record; // struct copy 
 		stats_collect(map_fd, map_type, &record);
 		stats_print(&record, &prev);
 		sleep(interval);
 	}
 }
+*/
+
+int open_check_bpf_map_file(const char *pin_dir, const char *map_name,
+			    int *map_fd, struct bpf_map_info *expected, struct bpf_map_info *info)
+{
+	/* finding pinned maps */
+	*map_fd = open_bpf_map_file(pin_dir, map_name, info);
+	if (*map_fd < 0) {
+		fprintf(stderr, "ERR: open_bpf_map_file failed for %s/%s\n",
+			pin_dir, map_name);
+		return EXIT_FAIL_BPF;
+	}
+
+	/* check map info, e.g. datarec is expected size */
+	int err = check_map_fd_info(info, expected);
+	if (err) {
+		fprintf(stderr, "ERR: map via FD not compatible\n");
+		return err;
+	}
+
+	if (verbose) {
+		printf(" - BPF map (bpf_map_type:%d) fd:%d id:%d name:%s"
+		       " key_size:%d value_size:%d max_entries:%d\n",
+		       info->type, *map_fd, info->id, info->name,
+		       info->key_size, info->value_size, info->max_entries
+		       );
+	}
+	return EXIT_OK;
+}
+
+static void stats_poll_map_reload(const char *pin_dir, const char *map_name,
+			      struct bpf_map_info *map_expect,
+			      struct bpf_map_info *info,
+			      int *map_fd, int interval)
+{
+	
+	int err, map_id_prev, map_id = 0;
+	struct stats_record prev, record = { 0 };
+	__u32 map_type;
+
+	map_id = info->id;
+	map_type = info->type;
+
+	/* Trick to pretty printf with thousands separators use %' */
+	setlocale(LC_NUMERIC, "en_US");
+
+	/* Get initial reading quickly */
+	stats_collect(*map_fd, map_type, &record);
+	usleep(1000000/4);
+
+	while (1) {
+		map_id_prev = map_id;
+		
+		close(*map_fd); /* close previous map fd */
+		while ((err = open_check_bpf_map_file(pin_dir, map_name,
+				map_fd, map_expect, info)) == EXIT_FAIL_BPF ||
+	       err != EXIT_OK) {
+			fprintf(stderr, "ERR: map still reloading\n");
+			usleep(1000000/4); /* wait a bit */
+		};
+	
+		map_id = info->id;
+
+		if (map_id_prev != map_id)
+		{
+			fprintf(stderr, " - ERR: map reloaded\n");
+			
+			map_id_prev = map_id;
+			map_type = info->type;
+
+			/* Get initial reading quickly */
+			stats_collect(*map_fd, map_type, &record);
+			usleep(1000000/4);
+		}
+
+		prev = record; /* struct copy */
+		stats_collect(*map_fd, map_type, &record);
+		stats_print(&record, &prev);
+		sleep(interval);
+	}
+}	
 
 #ifndef PATH_MAX
 #define PATH_MAX	4096
@@ -247,29 +333,19 @@ int main(int argc, char **argv)
 		return EXIT_FAIL_OPTION;
 	}
 
-	stats_map_fd = open_bpf_map_file(pin_dir, "xdp_stats_map", &info);
-	if (stats_map_fd < 0) {
-		return EXIT_FAIL_BPF;
-	}
-
 	/* check map info, e.g. datarec is expected size */
 	map_expect.key_size    = sizeof(__u32);
 	map_expect.value_size  = sizeof(struct datarec);
 	map_expect.max_entries = XDP_ACTION_MAX;
-	err = check_map_fd_info(&info, &map_expect);
-	if (err) {
-		fprintf(stderr, "ERR: map via FD not compatible\n");
+
+	err = open_check_bpf_map_file(pin_dir, "xdp_stats_map",
+				&stats_map_fd, &map_expect, &info);
+	if (err != EXIT_OK) {
 		return err;
 	}
-	if (verbose) {
-		printf("\nCollecting stats from BPF map\n");
-		printf(" - BPF map (bpf_map_type:%d) id:%d name:%s"
-		       " key_size:%d value_size:%d max_entries:%d\n",
-		       info.type, info.id, info.name,
-		       info.key_size, info.value_size, info.max_entries
-		       );
-	}
 
-	stats_poll(stats_map_fd, info.type, interval);
+	//stats_poll(stats_map_fd, info.type, interval);
+	stats_poll_map_reload(pin_dir, "xdp_stats_map",
+			      &map_expect, &info, &stats_map_fd, interval);
 	return EXIT_OK;
 }
